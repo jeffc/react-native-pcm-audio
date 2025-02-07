@@ -10,6 +10,7 @@ import android.os.Build;
 
 import android.util.Base64;
 import android.util.Base64InputStream;
+import android.util.Log;
 
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
@@ -26,6 +27,8 @@ import com.facebook.react.bridge.ReadableMapKeySetIterator;
 import java.util.Iterator;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.lang.Thread;
 
 public class PcmAudioModule extends ReactContextBaseJavaModule implements LifecycleEventListener {
 
@@ -44,15 +47,66 @@ public class PcmAudioModule extends ReactContextBaseJavaModule implements Lifecy
 
   @Override
   public void onHostDestroy() {
-    Iterator it = this.audioTracks.entrySet().iterator();
-    while (it.hasNext()) {
-      Map.Entry entry = (Map.Entry)it.next();
-      ((AudioTrack)entry.getValue()).release();
-      it.remove();
+  }
+
+  class RunnerThread extends Thread {
+    // wrapper class for data (which can be null) because the
+    // LinkedBlockingQueue fails with an exception if given a null item
+    class QElem {
+      private String data;
+
+      public QElem(String _d) {
+        this.data = _d;
+      }
+
+      public String getData() {
+        return this.data;
+      }
+    }
+
+    private AudioTrack _atrack = null;
+    // base64 audio chunks
+    private LinkedBlockingQueue _chunkBuffer = new LinkedBlockingQueue<QElem>();
+
+    public RunnerThread(AudioTrack t) {
+      this._atrack = t;
+    }
+
+    public AudioTrack getTrack() {
+      return this._atrack;
+    }
+
+    public boolean enqueueBase64Chunk(String ch) {
+      return this._chunkBuffer.offer(new QElem(ch));
+    }
+
+    public void run() {
+      Log.i("[HM][PCMAudio]", "Starting audio processing stream");
+      String s;
+      do {
+        try {
+          QElem qe = (QElem)(this._chunkBuffer.take());
+          s = qe.getData();
+        } catch(InterruptedException e) {
+          Log.i("[HM][PCMAudio]", "Queue interrupted, exiting thread");
+          s = null;
+        }
+
+        if (s != null) {
+          byte[] b = Base64.decode(s, Base64.DEFAULT);
+          Log.i("[HM][PCMAudio]", String.format("Processing %d audio bytes", b.length));
+          this._atrack.write(b, 0, b.length);
+        }
+      } while (s != null);
+      Log.i("[HM][PCMAudio]",  "Done processing audio bytes");
+      Log.i("[HM][PCMAudio]",  "Stopping");
+      this._atrack.stop();
+      Log.i("[HM][PCMAudio]",  "releasing");
+      this._atrack.release();
     }
   }
 
-  HashMap<Integer, AudioTrack> audioTracks = new HashMap<Integer, AudioTrack>();
+  HashMap<Integer, RunnerThread> audioTracks = new HashMap<Integer, RunnerThread>();
 
   @Override
   public String getName() {
@@ -83,66 +137,62 @@ public class PcmAudioModule extends ReactContextBaseJavaModule implements Lifecy
       });
     }
     int sessionId = audioTrack.getAudioSessionId();
-    this.audioTracks.put(sessionId, audioTrack);
+    RunnerThread rt = new RunnerThread(audioTrack);
+    this.audioTracks.put(sessionId, rt);
+    rt.start();
     callback.invoke("onSessionId", sessionId);
   }
   
   @ReactMethod
   public void flush(int sessionId) {
-    this.audioTracks.get(sessionId).flush();
+    this.audioTracks.get(sessionId).getTrack().flush();
   }
   
   @ReactMethod
   public boolean write(int sessionId, String base64Data) {
-    InputStream stream = new ByteArrayInputStream(base64Data.getBytes());
-    Base64InputStream decoder = new Base64InputStream(stream, Base64.DEFAULT);
-    try {
-      byte[] buffer = new byte[mBase64BufferSize];
-      int len;
-      while ((len = decoder.read(buffer)) != -1) {
-        this.audioTracks.get(sessionId).write(buffer, 0, len);
-      }
-      decoder.close();
-      return true;
-    } catch (IOException e) {
-      return false;
-    } finally {
-      try {
-        if (stream != null) stream.close();
-      } catch (IOException e) {
-      }
-    }
+    return this.audioTracks.get(sessionId).enqueueBase64Chunk(base64Data);
   }
   
   @ReactMethod
   public void stop(int sessionId) {
-    this.audioTracks.get(sessionId).stop();
+    this.audioTracks.get(sessionId).getTrack().stop();
   }
-  
+
+  // indicates to the running thread that it won't be getting any more audio
+  // data
   @ReactMethod
-  public void play(int sessionId) {
-    this.audioTracks.get(sessionId).play();
-  }
-  
-  @ReactMethod
-  public void release(int sessionId) {
-    this.audioTracks.get(sessionId).release();
+  public void end(int sessionId) {
+
+    Log.i("[HM][PCMAudio]", String.format("Signaling audio session end to session %d", sessionId));
+    this.audioTracks.get(sessionId).enqueueBase64Chunk(null);
     this.audioTracks.remove(sessionId);
   }
   
   @ReactMethod
+  public void play(int sessionId) {
+    this.audioTracks.get(sessionId).getTrack().play();
+  }
+  
+  @ReactMethod
+  public void release(int sessionId) {
+    //this.audioTracks.get(sessionId).getTrack().release();
+    //this.audioTracks.get(sessionId).interrupt();
+    //this.audioTracks.remove(sessionId);
+  }
+  
+  @ReactMethod
   public int getNotificationMarkerPosition(int sessionId) {
-    return this.audioTracks.get(sessionId).getNotificationMarkerPosition();
+    return this.audioTracks.get(sessionId).getTrack().getNotificationMarkerPosition();
   }
   
   @ReactMethod
   public int getSampleRate(int sessionId) {
-    return this.audioTracks.get(sessionId).getSampleRate();
+    return this.audioTracks.get(sessionId).getTrack().getSampleRate();
   }
 
   @ReactMethod
   public boolean setPositionNotificationPeriod(int sessionId, int periodInFrames) {
-    return (this.audioTracks.get(sessionId).setPositionNotificationPeriod(periodInFrames) == 0);
+    return (this.audioTracks.get(sessionId).getTrack().setPositionNotificationPeriod(periodInFrames) == 0);
   }
 
   private static final int mBase64BufferSize = 1024;
