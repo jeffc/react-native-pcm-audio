@@ -23,6 +23,7 @@ import com.facebook.react.bridge.ReactContextBaseJavaModule;
 import com.facebook.react.bridge.ReactMethod;
 import com.facebook.react.bridge.ReadableMap;
 import com.facebook.react.bridge.ReadableMapKeySetIterator;
+import com.facebook.react.modules.core.DeviceEventManagerModule;
 
 import java.util.Iterator;
 import java.util.HashMap;
@@ -32,8 +33,10 @@ import java.lang.Thread;
 
 public class PcmAudioModule extends ReactContextBaseJavaModule implements LifecycleEventListener {
 
+  private final ReactApplicationContext reactContext;
   public PcmAudioModule(ReactApplicationContext reactContext) {
     super(reactContext);
+    this.reactContext = reactContext;
     reactContext.addLifecycleEventListener(this);
   }
 
@@ -47,6 +50,12 @@ public class PcmAudioModule extends ReactContextBaseJavaModule implements Lifecy
 
   @Override
   public void onHostDestroy() {
+    Iterator it = this.audioTracks.entrySet().iterator();
+    while (it.hasNext()) {
+      Map.Entry entry = (Map.Entry)it.next();
+      ((AudioTrack)entry.getValue()).release();
+      it.remove();
+    }
   }
 
   class RunnerThread extends Thread {
@@ -64,12 +73,14 @@ public class PcmAudioModule extends ReactContextBaseJavaModule implements Lifecy
       }
     }
 
+    private final ReactApplicationContext _reactContext;
     private AudioTrack _atrack = null;
     // base64 audio chunks
     private LinkedBlockingQueue _chunkBuffer = new LinkedBlockingQueue<QElem>();
 
-    public RunnerThread(AudioTrack t) {
+    public RunnerThread(AudioTrack t, final ReactApplicationContext rc) {
       this._atrack = t;
+      this._reactContext = rc;
     }
 
     public AudioTrack getTrack() {
@@ -79,6 +90,8 @@ public class PcmAudioModule extends ReactContextBaseJavaModule implements Lifecy
     public boolean enqueueBase64Chunk(String ch) {
       return this._chunkBuffer.offer(new QElem(ch));
     }
+
+    // TODO - expose an interrupt-and-stop command
 
     public void run() {
       Log.i("[HM][PCMAudio]", "Starting audio processing stream");
@@ -102,6 +115,7 @@ public class PcmAudioModule extends ReactContextBaseJavaModule implements Lifecy
       Log.i("[HM][PCMAudio]",  "Stopping");
       this._atrack.stop();
       Log.i("[HM][PCMAudio]",  "releasing");
+      this._reactContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class).emit("PCMAudio.AudioDone", this._atrack.getAudioSessionId());
       this._atrack.release();
     }
   }
@@ -137,7 +151,7 @@ public class PcmAudioModule extends ReactContextBaseJavaModule implements Lifecy
       });
     }
     int sessionId = audioTrack.getAudioSessionId();
-    RunnerThread rt = new RunnerThread(audioTrack);
+    RunnerThread rt = new RunnerThread(audioTrack, this.reactContext);
     this.audioTracks.put(sessionId, rt);
     rt.start();
     callback.invoke("onSessionId", sessionId);
@@ -155,7 +169,9 @@ public class PcmAudioModule extends ReactContextBaseJavaModule implements Lifecy
   
   @ReactMethod
   public void stop(int sessionId) {
-    this.audioTracks.get(sessionId).getTrack().stop();
+    //this.audioTracks.get(sessionId).getTrack().stop();
+    this.audioTracks.get(sessionId).getTrack().pause();
+    this.audioTracks.get(sessionId).getTrack().flush();
   }
 
   // indicates to the running thread that it won't be getting any more audio
@@ -173,12 +189,14 @@ public class PcmAudioModule extends ReactContextBaseJavaModule implements Lifecy
     this.audioTracks.get(sessionId).getTrack().play();
   }
   
+  /*
   @ReactMethod
   public void release(int sessionId) {
     //this.audioTracks.get(sessionId).getTrack().release();
     //this.audioTracks.get(sessionId).interrupt();
     //this.audioTracks.remove(sessionId);
   }
+  */
   
   @ReactMethod
   public int getNotificationMarkerPosition(int sessionId) {
@@ -193,6 +211,16 @@ public class PcmAudioModule extends ReactContextBaseJavaModule implements Lifecy
   @ReactMethod
   public boolean setPositionNotificationPeriod(int sessionId, int periodInFrames) {
     return (this.audioTracks.get(sessionId).getTrack().setPositionNotificationPeriod(periodInFrames) == 0);
+  }
+
+  @ReactMethod
+  public float getGain(int sessionId) {
+    return this.audioTracks.get(sessionId).getTrack().getVolume();
+  }
+
+  @ReactMethod
+  public boolean setGain(int sessionId, float gain) {
+    return (this.audioTracks.get(sessionId).getTrack().setVolume(gain) == AudioTrack.SUCCESS);
   }
 
   private static final int mBase64BufferSize = 1024;
