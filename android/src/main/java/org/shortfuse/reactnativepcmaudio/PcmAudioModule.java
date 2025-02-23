@@ -214,13 +214,11 @@ public class PcmAudioModule extends ReactContextBaseJavaModule implements Lifecy
   }
 
   @ReactMethod
-  public float getGain(int sessionId) {
-    return this.audioTracks.get(sessionId).getTrack().getVolume();
-  }
-
-  @ReactMethod
-  public boolean setGain(int sessionId, float gain) {
-    return (this.audioTracks.get(sessionId).getTrack().setVolume(gain) == AudioTrack.SUCCESS);
+  public boolean setGain(int sessionId, double gain) {
+    Log.i("[HM][PCMAudio]", "Setting gain to " + ((float)gain));
+    boolean success = (this.audioTracks.get(sessionId).getTrack().setVolume((float)gain) == AudioTrack.SUCCESS);
+    Log.i("[HM][PCMAudio]", "Gain set success: " + success);
+    return success;
   }
 
   private static final int mBase64BufferSize = 1024;
@@ -246,6 +244,7 @@ public class PcmAudioModule extends ReactContextBaseJavaModule implements Lifecy
     public int sessionId;
     public int usage;
     public int contentType;
+    public double gain;
 
     public DecodedOptions(ReadableMap options) {
       this.encoding = AudioFormat.ENCODING_DEFAULT;
@@ -391,6 +390,9 @@ public class PcmAudioModule extends ReactContextBaseJavaModule implements Lifecy
           case "sampleRateInHz":
             this.sampleRateInHz = options.getInt(key);
             break;
+          case "gain":
+            this.gain = options.getDouble(key);
+            break;
           case "channels":
             int channels = options.getInt(key);
             if (channels == 1) {
@@ -441,7 +443,7 @@ public class PcmAudioModule extends ReactContextBaseJavaModule implements Lifecy
         options.channelMask,
         options.encoding);
     }
-    return new AudioTrack.Builder()
+    AudioTrack at = new AudioTrack.Builder()
       .setAudioAttributes(new android.media.AudioAttributes.Builder()
         .setUsage(options.usage)
         .setContentType(options.contentType)
@@ -454,6 +456,11 @@ public class PcmAudioModule extends ReactContextBaseJavaModule implements Lifecy
       .setBufferSizeInBytes(bufferSize)
       .setTransferMode(options.mode)
       .build();
+
+    // for some reason, gain can't be specified in the builder
+    Log.i("[HM][PCMAudio]", "Setting gain to " + (float)(options.gain));
+    at.setVolume((float)(options.gain));
+    return at;
   }
 
   @TargetApi(21)
@@ -467,7 +474,7 @@ public class PcmAudioModule extends ReactContextBaseJavaModule implements Lifecy
         options.channelMask,
         options.encoding);
     }
-    return new AudioTrack(
+    AudioTrack at = new AudioTrack(
       new android.media.AudioAttributes.Builder()
         .setUsage(options.usage)
         .setContentType(options.contentType)
@@ -480,6 +487,10 @@ public class PcmAudioModule extends ReactContextBaseJavaModule implements Lifecy
       bufferSize,
       options.mode,
       AudioManager.AUDIO_SESSION_ID_GENERATE);
+
+    // for some reason, gain can't be specified in the builder
+    at.setVolume((float)(options.gain));
+    return at;
   }
 
   @Deprecated
